@@ -59,7 +59,6 @@ func (cache *memoryCache) getResource() (err error) {
 // New returns a new cache with policy policy, max size size, and item expiration time
 // expiration.
 func New(policy string, size int, expiration time.Duration, mountPath string) (cache Cache, err error) {
-	err = nil
 	memCache := &memoryCache{
 		size:       size,
 		expiration: expiration,
@@ -78,10 +77,9 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 		}
 	default:
 		// Incorrect cache replacement policy; return an error.
-		cache = nil
 		err = ErrBadReplacementPolicy
 	}
-	return cache, err
+	return
 }
 
 // Get implements Cache.Get
