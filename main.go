@@ -34,8 +34,9 @@ func checkError(err error) (duplErr error) {
 // (As per A2 spec)
 func parseArgs() (ipPort, replacementPolicy string, size int, expirationTime time.Duration, err error) {
 	// If an incorrect length of arguments were specified, return and error and the zero-value
-	// for the rest of the arguments.
-	if len(os.Args) != 4 {
+	// for the rest of the arguments.  We should have five arguments: the four specified above as well
+	// as the file name of this file.
+	if len(os.Args) != 5 {
 		err = ErrInvalidArgs
 		return
 	}
@@ -46,15 +47,15 @@ func parseArgs() (ipPort, replacementPolicy string, size int, expirationTime tim
 	// and expiration time from a string to a time.Duration.
 
 	// These two are already read from the cmd line as strings; easy.
-	ipPort, replacementPolicy = os.Args[0], os.Args[1]
+	ipPort, replacementPolicy = os.Args[1], os.Args[2]
 
 	// Otherwise, do the conversions.
-	size, err = strconv.Atoi(os.Args[2])
+	size, err = strconv.Atoi(os.Args[3])
 	if checkError(err) != nil {
 		return
 	}
 
-	expTimeInt, err := strconv.Atoi(os.Args[3])
+	expTimeInt, err := strconv.Atoi(os.Args[4])
 	if checkError(err) != nil {
 		return
 	}
@@ -70,7 +71,7 @@ func parseArgs() (ipPort, replacementPolicy string, size int, expirationTime tim
 func main() {
 	// Try and parse arguments from command line.
 	ipPort, replacementPolicy, maxSize, expirationTime, err := parseArgs()
-	if err != nil {
+	if checkError(err) != nil {
 		return
 	}
 
@@ -79,7 +80,7 @@ func main() {
 
 	// Create a new cache.
 	cache, err := cache.New(replacementPolicy, maxSize, expirationTime, mountPath)
-	if err != nil {
+	if checkError(err) != nil {
 		return
 	}
 
