@@ -112,13 +112,29 @@ func (cache *memoryCache) purgeExpired() {
 // and a goroutine is dispatched to save the file to disk.  If fi won't fit in the cache,
 // resources are removed from cache until fi can be saved.  The provided function argument
 // nextToGo determines which resource is the next item to be removed from the cache.
-func (cache *memoryCache) saveResource(url url.URL, fi io.ReadWriter, nextToGo func(cache *memoryCache) url.URL) (err error) {
+func (cache *memoryCache) saveResource(u url.URL, fi io.ReadWriter, nextToGo func(cache *memoryCache) url.URL) (err error) {
 
 	// save tries to save fi of size fiSize to cache.  If it succeeds, return true,
 	// if not, return false.
-	save := func(fiSize int64, fi io.ReadWriter, cache *memoryCache) (fit bool) {
+	save := func(url url.URL, fi io.ReadWriter, fiSize int64, cache *memoryCache) (fit bool) {
 		// Make sure fi will fit in the cache.  Calculate the amount of space we need.
-		needSize := fiSize + cache.size
+		var needSize int64
+		if file, ok := cache.memory[url]; ok {
+			// This url is already in the cache. The file size however,
+			// could have changed so we should re-save and recalculate sizes.
+			alreadyInMemSize, err := fileSize(file.file)
+			if checkError(err) != nil {
+				return false
+			}
+
+			// We need room for the size of fi + the size of everything in the cache - the size of the duplicate
+			// resource to be deleted.
+			needSize = fiSize + cache.size - alreadyInMemSize
+		} else {
+			// This url is not in the cache.
+			// We need room for the size of fi + the size of everything in the cache.
+			needSize = fiSize + cache.size
+		}
 
 		// If it fits, save it and return.
 		if needSize <= cache.maxSize {
@@ -127,7 +143,6 @@ func (cache *memoryCache) saveResource(url url.URL, fi io.ReadWriter, nextToGo f
 				saveTime: time.Now(),
 			}
 			cache.size = needSize
-			// TODO: size adjustments if resource already in cache
 			// TODO: dispatch goroutine to save to disk
 			return true
 		}
@@ -137,14 +152,14 @@ func (cache *memoryCache) saveResource(url url.URL, fi io.ReadWriter, nextToGo f
 
 	// Get the size of fi.
 	size, err := fileSize(fi)
-	if err != nil {
+	if checkError(err) != nil {
 		return err
 	}
 
 	// Before doing anything, try and see if fi fits in the cache.
 	// If it does, we don't need to replace anything.
 	var fits bool
-	if fits = save(size, fi, cache); fits {
+	if fits = save(u, fi, size, cache); fits {
 		// It fit, we're good, so return.
 		return nil
 	}
@@ -158,7 +173,7 @@ func (cache *memoryCache) saveResource(url url.URL, fi io.ReadWriter, nextToGo f
 			continue
 		}
 		// Try and save fi again, hopefully we freed up enough space.
-		fits = save(size, fi, cache)
+		fits = save(u, fi, size, cache)
 	}
 
 	return nil
