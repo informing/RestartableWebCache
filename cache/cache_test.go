@@ -11,6 +11,8 @@ import (
 	"github.ugrad.cs.ubc.ca/CPSC416-2018W-T1/A2-i8b0b-e8y0b/cache"
 )
 
+//TODO: Refactor tests into helper functions.
+
 var (
 	testURL200    url.URL
 	testURL500    url.URL
