@@ -3,8 +3,12 @@ package cache_test
 
 import (
 	"bytes"
+	"io"
 	"log"
 	"net/url"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,7 +28,7 @@ var (
 	testBuffer900 bytes.Buffer
 )
 
-// If error is non-nil, print it out and return it.
+// checkError prints out and returns any non-nil errors.
 func checkError(err error) (duplErr error) {
 	if err != nil {
 		log.Printf("Error: %s\n", err.Error())
@@ -33,8 +37,26 @@ func checkError(err error) (duplErr error) {
 	return err
 }
 
+// dirEmpty returns whether or not a given directory (name) is empty.
+func dirEmpty(name string) (empty bool, err error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	// Try and read at max 1 file.
+	_, err = f.Readdirnames(1)
+	if err == io.EOF {
+		// The directory is empty.
+		return true, nil
+	}
+	// Either not empty or error, suits both cases.
+	return false, err
+}
+
 // Initialize our test files here.
-// One of each of 700kB, 500kB, and 200kB.
+// One of each of 700kB,500kB, and 200kB.
 func init() {
 	url200, err := url.Parse("/test/200")
 	if checkError(err) != nil {
@@ -79,10 +101,31 @@ func init() {
 
 func TestCache(t *testing.T) {
 	// Instantiate an LFU cache, with 1kB of storage, item expiry of three seconds (for testing)
-	// mounted a disk point /cache.
-	testCache, err := cache.New("LFU", 1024, time.Duration(time.Second*3), "/cache")
+	// mounted a disk point <pwd>/test.
+
+	currDir, err := os.Getwd()
+	if checkError(err) != nil {
+		t.Error("Error retrieving current working directory")
+	}
+	mountPath := filepath.Join(currDir, "test1")
+
+	// If mountPath already exists as a folder, delete it.  We want
+	// our call to cache.New to create the mount path.
+	stat, err := os.Stat(mountPath)
+	if !os.IsNotExist(err) && stat.IsDir() {
+		if err = os.RemoveAll(mountPath); checkError(err) != nil {
+			t.Error("Found already existing mount point and couldn't remove it.")
+		}
+	}
+
+	testCache, err := cache.New("LFU", 1024, time.Duration(time.Second*3), mountPath)
 	if checkError(err) != nil {
 		t.Error("Couldn't instantiate cache")
+	}
+
+	// Make sure that the mountPath was created
+	if _, err = os.Stat(mountPath); os.IsNotExist(err) {
+		t.Errorf("Failed to create mount point for cache at %s", mountPath)
 	}
 
 	t.Run("Try and save and retrieve from the cache", func(t *testing.T) {
@@ -101,6 +144,14 @@ func TestCache(t *testing.T) {
 
 		if testCache.Size() != testBuffer200.Len() {
 			t.Errorf("Size mismatch: cache should have size 200 bytes but has size %d", testBuffer200.Len())
+		}
+
+		// Sleep a bit to allow the disk save to run.
+		time.Sleep(100 * time.Millisecond)
+
+		fipath := filepath.Join(mountPath, cache.ToDiskString(testURL200))
+		if _, err = os.Stat(fipath); os.IsNotExist(err) {
+			t.Errorf("%s was not found on disk", cache.ToDiskString(testURL200))
 		}
 	})
 
@@ -130,6 +181,16 @@ func TestCache(t *testing.T) {
 
 		if testCache.Size() != testBuffer200.Len()+testBuffer500.Len() {
 			t.Errorf("Size mismatch: cache should have size 700 bytes but has size %d", testCache.Size())
+		}
+
+		fipath := filepath.Join(mountPath, cache.ToDiskString(testURL200))
+		if _, err = os.Stat(fipath); os.IsNotExist(err) {
+			t.Errorf("%s was not found on disk", cache.ToDiskString(testURL200))
+		}
+
+		fipath = filepath.Join(mountPath, cache.ToDiskString(testURL500))
+		if _, err = os.Stat(fipath); os.IsNotExist(err) {
+			t.Errorf("%s was not found on disk", cache.ToDiskString(testURL500))
 		}
 	})
 
@@ -163,13 +224,37 @@ func TestCache(t *testing.T) {
 		if testCache.Size() != 0 {
 			t.Errorf("Size mismatch: cache should have size 0 bytes but has size %d", testCache.Size())
 		}
+
+		if empty, err := dirEmpty(mountPath); checkError(err) != nil || !empty {
+			t.Error("Mount path should be empty but is not")
+		}
 	})
+
+	// Clean up folders we created for testing.
+	if err = os.RemoveAll(mountPath); checkError(err) != nil {
+		return
+	}
 }
 
 func TestLRU(t *testing.T) {
 	// Instantiate an LFU cache, with 1kB of storage, item expiry of an hour (so nothing expires -
-	// testing purposes) mounted at disk point /cache.
-	lruCache, err := cache.New("LRU", 1024, time.Duration(time.Hour*1), "/cache")
+	// testing purposes) mounted at disk point /test.
+	currDir, err := os.Getwd()
+	if checkError(err) != nil {
+		t.Error("Error retrieving current working directory")
+	}
+	mountPath := filepath.Join(currDir, "test2")
+
+	// If mountPath already exists as a folder, delete it.  We want
+	// our call to cache.New to create the mount path.
+	stat, err := os.Stat(mountPath)
+	if !os.IsNotExist(err) && stat.IsDir() {
+		if err = os.RemoveAll(mountPath); checkError(err) != nil {
+			t.Error("Found already existing mount point and couldn't remove it.")
+		}
+	}
+
+	lruCache, err := cache.New("LRU", 1024, time.Duration(time.Hour*1), mountPath)
 	if checkError(err) != nil {
 		t.Error("Couldn't instantiate cache")
 	}
@@ -178,15 +263,18 @@ func TestLRU(t *testing.T) {
 		if err = lruCache.Save(testURL700, &testBuffer700); checkError(err) != nil {
 			t.Errorf("Couldn't save %s to the cache", testURL700.String())
 		}
+		time.Sleep(1 * time.Second)
 
 		if err = lruCache.Save(testURL200, &testBuffer200); checkError(err) != nil {
 			t.Errorf("Couldn't save %s to the cache", testURL200.String())
 		}
+		time.Sleep(1 * time.Second)
 
 		// This should evict the lru item - testBuffer700
 		if err = lruCache.Save(testURL500, &testBuffer500); checkError(err) != nil {
 			t.Errorf("Couldn't save %s to the cache", testURL500.String())
 		}
+		time.Sleep(1 * time.Second)
 
 		if lruCache.Size() != testBuffer200.Len()+testBuffer500.Len() {
 			t.Errorf("Size mismatch: cache should have size 700 bytes but has size %d", lruCache.Size())
@@ -228,6 +316,19 @@ func TestLRU(t *testing.T) {
 		if lruCache.Size() != testBuffer200.Len()+testBuffer700.Len() {
 			t.Errorf("Size mismatch: cache should have size 900 bytes but has size %d", lruCache.Size())
 		}
+
+		// Sleep to allow disk saves to normalize.
+		time.Sleep(1 * time.Second)
+
+		fipath := filepath.Join(mountPath, cache.ToDiskString(testURL200))
+		if _, err = os.Stat(fipath); os.IsNotExist(err) {
+			t.Errorf("%s was not found on disk", cache.ToDiskString(testURL200))
+		}
+
+		fipath = filepath.Join(mountPath, cache.ToDiskString(testURL700))
+		if _, err = os.Stat(fipath); os.IsNotExist(err) {
+			t.Errorf("%s was not found on disk", cache.ToDiskString(testURL700))
+		}
 	})
 
 	t.Run("Add largely overflowing item to cache, see that the correct two LRU items are evicted", func(t *testing.T) {
@@ -249,13 +350,42 @@ func TestLRU(t *testing.T) {
 		if lruCache.Size() != testBuffer900.Len() {
 			t.Errorf("Size mismatch: cache should have size 900 bytes but has size %d", lruCache.Size())
 		}
+
+		// Sleep to allow disk saves to normalize.
+		time.Sleep(100 * time.Millisecond)
+
+		fipath := filepath.Join(mountPath, cache.ToDiskString(testURL900))
+		if _, err = os.Stat(fipath); os.IsNotExist(err) {
+			t.Errorf("%s was not found on disk", cache.ToDiskString(testURL900))
+		}
+
+		fipath = filepath.Join(mountPath, cache.ToDiskString(testURL500))
+		if _, err = os.Stat(fipath); !os.IsNotExist(err) {
+			t.Errorf("%s was found on disk, but should have been deleted", cache.ToDiskString(testURL500))
+		}
+
+		fipath = filepath.Join(mountPath, cache.ToDiskString(testURL700))
+		if _, err = os.Stat(fipath); !os.IsNotExist(err) {
+			t.Errorf("%s was found on disk, but should have been deleted", cache.ToDiskString(testURL700))
+		}
 	})
+
+	// Clean up folders we created for testing.
+	if err = os.RemoveAll(mountPath); checkError(err) != nil {
+		return
+	}
 }
 
 func TestLFU(t *testing.T) {
 	// Instantiate an LFU cache, with 1kB of storage, item expiry of an hour (so nothing expires -
 	// testing purposes) mounted at disk point /cache.
-	lfuCache, err := cache.New("LFU", 1024, time.Duration(time.Second*3), "/cache")
+	currDir, err := os.Getwd()
+	if checkError(err) != nil {
+		t.Error("Error retrieving current working directory")
+	}
+	mountPath := filepath.Join(currDir, "test3")
+
+	lfuCache, err := cache.New("LFU", 1024, time.Duration(time.Second*3), mountPath)
 	if checkError(err) != nil {
 		t.Error("Couldn't instantiate cache")
 	}
@@ -343,4 +473,106 @@ func TestLFU(t *testing.T) {
 			t.Errorf("Size mismatch: cache should have size 900 bytes but has size %d", lfuCache.Size())
 		}
 	})
+
+	// Clean up folders we created for testing.
+	if err = os.RemoveAll(mountPath); checkError(err) != nil {
+		return
+	}
+}
+
+func TestLoadFromDisk(t *testing.T) {
+	// Instantiate an LFU cache, with 1kB of storage, item expiry of an hour (so nothing expires -
+	// testing purposes) mounted at disk point /test.
+	currDir, err := os.Getwd()
+	if checkError(err) != nil {
+		t.Error("Error retrieving current working directory")
+	}
+	mountPath := filepath.Join(currDir, "test4")
+
+	// If mountPath already exists as a folder, delete it.
+	stat, err := os.Stat(mountPath)
+	if !os.IsNotExist(err) && stat.IsDir() {
+		if err = os.RemoveAll(mountPath); checkError(err) != nil {
+			t.Error("Found already existing mount point and couldn't remove it.")
+		}
+	}
+
+	// Make empty folder at mountPath.
+	if err = os.Mkdir(mountPath, os.ModePerm); checkError(err) != nil {
+		return
+	}
+
+	testItems := []struct {
+		u url.URL
+		b bytes.Buffer
+	}{
+		{
+			testURL200,
+			testBuffer200,
+		},
+		{
+			testURL500,
+			testBuffer500,
+		},
+		{
+			testURL700,
+			testBuffer700,
+		},
+		{
+			testURL900,
+			testBuffer900,
+		},
+	}
+
+	var wg sync.WaitGroup
+	for _, item := range testItems {
+		wg.Add(1)
+		// Avoid shadowing - gotcha!
+		item := item
+		go func() {
+			defer wg.Done()
+			savePath := filepath.Join(mountPath, cache.ToDiskString(item.u))
+			toSave, err := os.Create(savePath)
+			if checkError(err) != nil {
+				return
+			}
+			defer toSave.Close()
+
+			// Copy contents from our resource to a file.
+			if _, err = io.Copy(toSave, &item.b); checkError(err) != nil {
+				return
+			}
+
+			// Flush file contents to disk.
+			if err = toSave.Sync(); checkError(err) != nil {
+				return
+			}
+		}()
+	}
+
+	// Wait for all files to be saved to disk.
+	// We can now run our test!
+	wg.Wait()
+
+	lruCache, err := cache.New("LRU", 1024, time.Duration(time.Hour*1), mountPath)
+	if checkError(err) != nil {
+		t.Error("Couldn't instantiate cache")
+	}
+
+	t.Run("Cache should fill up with files from the disk", func(t *testing.T) {
+		if lruCache.Size() > 1024 {
+			t.Errorf("Overfilled cache on startup.  Cache size: %d", lruCache.Size())
+		}
+
+		// The cache can be filled, with the available permutations, to either 700 or 900.
+		// Assert that size here.
+		if lruCache.Size() != 700 && lruCache.Size() != 900 {
+			t.Errorf("Cache was filled on startup to an impossible size.  Cache size: %d", lruCache.Size())
+		}
+	})
+
+	// Clean up folders we created for testing.
+	if err = os.RemoveAll(mountPath); checkError(err) != nil {
+		return
+	}
 }
