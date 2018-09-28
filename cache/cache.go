@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -37,10 +41,10 @@ var (
 // All operations on Cache should be thread safe.
 type Cache interface {
 	// Get retrieves a resource from the cache.
-	Get(url url.URL) (io.ReadWriter, error)
+	Get(url url.URL) (*bytes.Buffer, error)
 
 	// Save saves a resource to the cache.
-	Save(url url.URL, fi io.ReadWriter) error
+	Save(url url.URL, fi *bytes.Buffer) error
 
 	// Size returns the current size of the cache (not the max size).
 	Size() int
@@ -74,20 +78,15 @@ type memoryCache struct {
 // this resource has been accessed via the cache.  Both of these metrics
 // are useful for implemented LRU / LFU replacement policies
 type resource struct {
-	file        io.ReadWriter // Use an io.ReadWriter here (so we can use both *os.File and *bytes.Buffer).
+	file        *bytes.Buffer
 	saveTime    time.Time
 	accessCount int
 }
 
 // fileSize returns the size, in bytes, of fi.
 // fi should be of type *bytes.Buffer.
-func fileSize(fi io.ReadWriter) (size int64, err error) {
-	// We can get the length of a *bytes.Buffer, make the assertion here.
-	if fi, ok := fi.(*bytes.Buffer); ok {
-		return int64(fi.Len()), nil
-	}
-	// TODO: Add support for *os.File if needed.
-	return 0, ErrCouldntReadResourceLen
+func fileSize(fi *bytes.Buffer) (size int64, err error) {
+	return int64(fi.Len()), nil
 }
 
 // purgeExpired purges expired resources from the cache.
@@ -108,15 +107,29 @@ func (cache *memoryCache) purgeExpired() {
 	return
 }
 
+// ToDiskString converts a url to its disk filename.
+// TODO: make the reversable hash less sketchy.
+func ToDiskString(url url.URL) (res string) {
+	return strings.Replace(url.String(), "/", ".", -1)[1:]
+}
+
+// fromDiskString converts a disk string to its url.
+// TODO: make the reversable hash less sketchy.
+func fromDiskString(ds string) (resURL url.URL) {
+	newString := "/" + strings.Replace(ds, ".", "/", -1)
+	url, _ := url.Parse(newString)
+	return *url
+}
+
 // saveResource saves fi to cache. Files are saved immediately to the in-memory cache,
 // and a goroutine is dispatched to save the file to disk.  If fi won't fit in the cache,
 // resources are removed from cache until fi can be saved.  The provided function argument
 // nextToGo determines which resource is the next item to be removed from the cache.
-func (cache *memoryCache) saveResource(u url.URL, fi io.ReadWriter, nextToGo func(cache *memoryCache) url.URL) (err error) {
+func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo func(cache *memoryCache) url.URL) (err error) {
 
 	// save tries to save fi of size fiSize to cache.  If it succeeds, return true,
 	// if not, return false.
-	save := func(url url.URL, fi io.ReadWriter, fiSize int64, cache *memoryCache) (fit bool) {
+	save := func(url url.URL, fi *bytes.Buffer, fiSize int64, cache *memoryCache) (fit bool) {
 		// Make sure fi will fit in the cache.  Calculate the amount of space we need.
 		var needSize int64
 		if file, ok := cache.memory[url]; ok {
@@ -143,7 +156,31 @@ func (cache *memoryCache) saveResource(u url.URL, fi io.ReadWriter, nextToGo fun
 				saveTime: time.Now(),
 			}
 			cache.size = needSize
-			// TODO: dispatch goroutine to save to disk
+
+			// Dispatch a goroutine to save to disk.
+			go func() {
+				// Create the file.
+				savePath := filepath.Join(cache.mountPath, ToDiskString(url))
+				toSave, err := os.Create(savePath)
+				if checkError(err) != nil {
+					return
+				}
+				defer toSave.Close()
+
+				// Copy contents from our resource to a file.
+				// We dont wan't to drain the in-memory buffer, so make a copy
+				// and copy that over.
+				newBuf := bytes.NewBuffer(fi.Bytes())
+				if _, err = io.Copy(toSave, newBuf); checkError(err) != nil {
+					return
+				}
+
+				// Flush file contents to disk.
+				if err = toSave.Sync(); checkError(err) != nil {
+					return
+				}
+			}()
+
 			return true
 		}
 		// It didn't fit.
@@ -190,7 +227,15 @@ func (cache *memoryCache) deleteResource(url url.URL) (err error) {
 		}
 		cache.size -= size
 		delete(cache.memory, url)
-		// TODO: dispatch goroutine to delete from disk
+
+		// Dispatch goroutine to delete from disk.
+		go func() {
+			deletePath := filepath.Join(cache.mountPath, ToDiskString(url))
+			if err := os.Remove(deletePath); checkError(err) != nil {
+				return
+			}
+		}()
+
 		return nil
 	}
 	// If the resource doesn't exist, don't error - just no-op.
@@ -201,7 +246,7 @@ func (cache *memoryCache) deleteResource(url url.URL) (err error) {
 // Everytime a resource is retrieved, its accessCount increments by 1.
 // If the resource specified by url does not exist in the cache, an appropriate error
 // is returned.
-func (cache *memoryCache) getResource(url url.URL) (fi io.ReadWriter, err error) {
+func (cache *memoryCache) getResource(url url.URL) (fi *bytes.Buffer, err error) {
 	if resource, ok := cache.memory[url]; ok {
 		// The resource is here; increment its accessCount and return it.
 		// Also, set its saveTime to time.Now().
@@ -267,6 +312,7 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 		memory:     make(map[url.URL]*resource),
 		mountPath:  mountPath,
 	}
+
 	switch policy {
 	case "LRU":
 		cache = &lru{memoryCache: memCache}
@@ -278,23 +324,79 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 		return
 	}
 
-	// Spin up a gouroutine to purge expired items every 100ms.
+	// Load up anything we can find on disk into memory.
+	// Load into memory up to size.  If there are more files
+	// at the mount point than there is room in size, some files
+	// will not be loaded into memory.  If the mount path doesn't exist already,
+	// create it and return the cache, no loading necessary.
+	stat, err := os.Stat(mountPath)
+	if os.IsNotExist(err) {
+		// Mount path doesn't exist, make it.
+		if err = os.Mkdir(mountPath, os.ModePerm); checkError(err) != nil {
+			return nil, err
+		}
+	} else {
+		// Mount path exists.
+		if stat.IsDir() {
+			// Mount path is a directory, load files from it into the in-memory cache.
+			files, err := ioutil.ReadDir(mountPath)
+			if checkError(err) != nil {
+				// At this point, the cache is usable, it just couldn't load from disk.
+				// We can return it here safely in case of error.
+				// That doesn't mean callers shouldn't check for errors, they should.
+				return cache, err
+			}
+			for _, file := range files {
+				// Only worry about files in the mount path here.
+				if !file.IsDir() {
+					size := file.Size()
+					name := file.Name()
+
+					fi, err := os.Open(filepath.Join(mountPath, name))
+					if checkError(err) != nil {
+						continue
+					}
+
+					url := fromDiskString(name)
+					if checkError(err) != nil {
+						continue
+					}
+
+					needSize := memCache.size + size
+					if needSize <= memCache.maxSize {
+						var buf bytes.Buffer
+						if _, err := io.Copy(&buf, fi); checkError(err) != nil {
+							continue
+						}
+						memCache.memory[url] = &resource{
+							file:        &buf,
+							saveTime:    time.Now(),
+							accessCount: 1,
+						}
+						memCache.size = needSize
+					}
+				}
+			}
+		}
+	}
+
+	// Spin up a gouroutine to purge expired items every 10ms.
 	// This is concurrency safe.
 	go func() {
 		for {
 			select {
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(10 * time.Millisecond):
 				memCache.Lock()
 				memCache.purgeExpired()
 				memCache.Unlock()
 			}
 		}
 	}()
-	return
+	return cache, nil
 }
 
 // Get implements Cache.Get for an LRU cache.
-func (cache *lru) Get(url url.URL) (fi io.ReadWriter, err error) {
+func (cache *lru) Get(url url.URL) (fi *bytes.Buffer, err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
@@ -303,7 +405,7 @@ func (cache *lru) Get(url url.URL) (fi io.ReadWriter, err error) {
 }
 
 // Save implements Cache.Save for an LRU cache.
-func (cache *lru) Save(url url.URL, fi io.ReadWriter) (err error) {
+func (cache *lru) Save(url url.URL, fi *bytes.Buffer) (err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
@@ -320,7 +422,7 @@ func (cache *lru) Size() (size int) {
 }
 
 // Get implements Cache.Get for an LFU cache.
-func (cache *lfu) Get(url url.URL) (fi io.ReadWriter, err error) {
+func (cache *lfu) Get(url url.URL) (fi *bytes.Buffer, err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
@@ -329,7 +431,7 @@ func (cache *lfu) Get(url url.URL) (fi io.ReadWriter, err error) {
 }
 
 // Save implements Cache.Save for an LFU cache.
-func (cache *lfu) Save(url url.URL, fi io.ReadWriter) (err error) {
+func (cache *lfu) Save(url url.URL, fi *bytes.Buffer) (err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
