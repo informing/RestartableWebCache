@@ -357,11 +357,19 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 						continue
 					}
 
+					// Re-build the url for this file.
+					// See FromDiskString for unhash rules.
 					url := FromDiskString(name)
 					if err != nil {
 						continue
 					}
 
+					// Make sure that the file will fit in the cache.
+					// If it does, create a resource and save it in the cache;
+					// then, move on to the next file.  If it doesn't,
+					// simply move on.  This has the effect of the cache trying to load
+					// files into memory in the same order of the files that are
+					// returned from ioutil.Readdir.
 					needSize := memCache.size + size
 					if needSize <= memCache.maxSize {
 						var buf bytes.Buffer
