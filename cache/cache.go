@@ -110,13 +110,13 @@ func (cache *memoryCache) purgeExpired() {
 // ToDiskString converts a url to its disk filename.
 // TODO: make the reversable hash less sketchy.
 func ToDiskString(url url.URL) (res string) {
-	return strings.Replace(url.String(), "/", ".", -1)[1:]
+	return strings.Replace(url.String(), "/", "-", -1)
 }
 
-// fromDiskString converts a disk string to its url.
+// FromDiskString converts a disk string to its url.
 // TODO: make the reversable hash less sketchy.
-func fromDiskString(ds string) (resURL url.URL) {
-	newString := "/" + strings.Replace(ds, ".", "/", -1)
+func FromDiskString(ds string) (resURL url.URL) {
+	newString := strings.Replace(ds, "-", "/", -1)
 	url, _ := url.Parse(newString)
 	return *url
 }
@@ -136,7 +136,7 @@ func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo fun
 			// This url is already in the cache. The file size however,
 			// could have changed so we should re-save and recalculate sizes.
 			alreadyInMemSize, err := fileSize(file.file)
-			if checkError(err) != nil {
+			if err != nil {
 				return false
 			}
 
@@ -162,7 +162,7 @@ func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo fun
 				// Create the file.
 				savePath := filepath.Join(cache.mountPath, ToDiskString(url))
 				toSave, err := os.Create(savePath)
-				if checkError(err) != nil {
+				if err != nil {
 					return
 				}
 				defer toSave.Close()
@@ -171,12 +171,12 @@ func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo fun
 				// We dont wan't to drain the in-memory buffer, so make a copy
 				// and copy that over.
 				newBuf := bytes.NewBuffer(fi.Bytes())
-				if _, err = io.Copy(toSave, newBuf); checkError(err) != nil {
+				if _, err = io.Copy(toSave, newBuf); err != nil {
 					return
 				}
 
 				// Flush file contents to disk.
-				if err = toSave.Sync(); checkError(err) != nil {
+				if err = toSave.Sync(); err != nil {
 					return
 				}
 			}()
@@ -189,7 +189,7 @@ func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo fun
 
 	// Get the size of fi.
 	size, err := fileSize(fi)
-	if checkError(err) != nil {
+	if err != nil {
 		return err
 	}
 
@@ -231,7 +231,7 @@ func (cache *memoryCache) deleteResource(url url.URL) (err error) {
 		// Dispatch goroutine to delete from disk.
 		go func() {
 			deletePath := filepath.Join(cache.mountPath, ToDiskString(url))
-			if err := os.Remove(deletePath); checkError(err) != nil {
+			if err := os.Remove(deletePath); err != nil {
 				return
 			}
 		}()
@@ -332,7 +332,7 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 	stat, err := os.Stat(mountPath)
 	if os.IsNotExist(err) {
 		// Mount path doesn't exist, make it.
-		if err = os.Mkdir(mountPath, os.ModePerm); checkError(err) != nil {
+		if err = os.Mkdir(mountPath, os.ModePerm); err != nil {
 			return nil, err
 		}
 	} else {
@@ -340,7 +340,7 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 		if stat.IsDir() {
 			// Mount path is a directory, load files from it into the in-memory cache.
 			files, err := ioutil.ReadDir(mountPath)
-			if checkError(err) != nil {
+			if err != nil {
 				// At this point, the cache is usable, it just couldn't load from disk.
 				// We can return it here safely in case of error.
 				// That doesn't mean callers shouldn't check for errors, they should.
@@ -353,19 +353,19 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 					name := file.Name()
 
 					fi, err := os.Open(filepath.Join(mountPath, name))
-					if checkError(err) != nil {
+					if err != nil {
 						continue
 					}
 
-					url := fromDiskString(name)
-					if checkError(err) != nil {
+					url := FromDiskString(name)
+					if err != nil {
 						continue
 					}
 
 					needSize := memCache.size + size
 					if needSize <= memCache.maxSize {
 						var buf bytes.Buffer
-						if _, err := io.Copy(&buf, fi); checkError(err) != nil {
+						if _, err := io.Copy(&buf, fi); err != nil {
 							continue
 						}
 						memCache.memory[url] = &resource{
