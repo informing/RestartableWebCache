@@ -58,7 +58,8 @@ func cacheResource(resourceLink string) (cached bool) {
 	var responseBuffer bytes.Buffer
 	responseBuffer.Write(responseBodyData)
 	resourceURL, _ := url.Parse(resourceLink)
-	defaultProxy.cache.Save(*resourceURL, &responseBuffer)
+	fmt.Println("Saving", resourceLink, "to cache")
+	// defaultProxy.cache.Save(*resourceURL, &responseBuffer)
 	return true
 }
 
@@ -113,7 +114,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 				defaultProxy.cache.Save(*resourceURL, &responseBuffer)
 
 				fmt.Println("Parsing the response body to find more resources to cache")
-				err = parseResponseBody(serverResponse.Body)
+				err = ParseResponseBody(serverResponse.Body)
 				if err != nil {
 					fmt.Println(err)
 				}
@@ -152,7 +153,8 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 	}
 }
 
-func parseResponseBody(r io.Reader) error {
+// ParseResponseBody parses the given reader
+func ParseResponseBody(r io.Reader) error {
 	// depth := 0
 	z := html.NewTokenizer(r)
 	for {
