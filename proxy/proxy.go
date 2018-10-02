@@ -30,27 +30,33 @@ type Proxy struct {
 var defaultProxy = &Proxy{}
 
 func extractLinkFromElement(z *html.Tokenizer, elementTag string) (link string, err error) {
+	debugPrompt := "func extractLinkFromElement:"
 	attr := []byte(elementTag)
 	for key, val, hasAttr := z.TagAttr(); hasAttr == true; key, val, hasAttr = z.TagAttr() {
 		if bytes.Equal(key, attr) {
-			fmt.Println("func extractLinkFromElement: found", key, "with", val)
+			fmt.Println(debugPrompt, "found", string(key), "with", string(val))
 			return string(val), nil
 		}
-		fmt.Println(key, val)
+		fmt.Println(debugPrompt, "passed", string(key), string(val))
 	}
 	return "", errors.New("cannot locate the resource")
 }
 
 func cacheResource(resourceLink string) (cached bool) {
 	// check if Resouce URI is relative
+	debugPrompt := "func cacheResource:"
 	if resourceLink[0] == '/' && !strings.HasPrefix(resourceLink, "//") {
+		fmt.Println(debugPrompt, "will not parse relative links")
 		return false
-	} else if resourceLink[0] != '/' && (!strings.HasPrefix(resourceLink, "http://") || !strings.HasPrefix(resourceLink, "https://")) {
+	} else if resourceLink[0] != '/' && (!strings.HasPrefix(resourceLink, "http://")) {
+		// TODO: determine if we want to cache stuffs like "example.com/a.png"
+		fmt.Println(debugPrompt, "will not parse relative links or load non-http resources")
 		return false
 	}
 	response, err := http.Get(resourceLink)
 	if err != nil {
 		// Cannot find URI
+		fmt.Println(debugPrompt, "cannot find the given resource", resourceLink)
 		return false
 	}
 	responseBodyData, err := ioutil.ReadAll(response.Body)
@@ -58,7 +64,7 @@ func cacheResource(resourceLink string) (cached bool) {
 	var responseBuffer bytes.Buffer
 	responseBuffer.Write(responseBodyData)
 	resourceURL, _ := url.Parse(resourceLink)
-	fmt.Println("Saving", resourceLink, "to cache")
+	fmt.Println(debugPrompt, "saving", resourceLink, "to cache")
 	defaultProxy.cache.Save(*resourceURL, &responseBuffer)
 	return true
 }
@@ -164,21 +170,34 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 func ParseResponseBody(r io.Reader) error {
 	// depth := 0
 	z := html.NewTokenizer(r)
+	// expectScript := false
+	// expectLink := false
 	for {
 		tt := z.Next()
-		fmt.Println("Fetching next token", tt)
+		// fmt.Println("Fetching next token", tt)
 		switch tt {
 		case html.ErrorToken:
 			// Ultimately we will get to this point (EOF)
 			return z.Err()
 		case html.TextToken:
 			continue
+			/*
+				link := make([]byte, 1024)
+				if expectLink {
+					copy(link, z.Text())
+					cacheResource(string(link))
+					expectLink = false
+				} else if expectScript {
+					cacheResource(string(link))
+					expectScript = false
+				}
+			*/
 		case html.SelfClosingTagToken:
 			tn, hasAttr := z.TagName()
 			if !hasAttr {
 				continue
 			} else {
-				fmt.Println("Found a Self-Closing Token", tn)
+				fmt.Println("Found a Self-Closing Token", string(tn))
 			}
 			if len(tn) == 3 && bytes.Equal(tn, []byte("img")) {
 				link, err := extractLinkFromElement(z, "src")
@@ -201,18 +220,47 @@ func ParseResponseBody(r io.Reader) error {
 					cacheResource(link)
 				}
 			}
-		case html.StartTagToken, html.EndTagToken:
+		case html.StartTagToken:
 			tn, _ := z.TagName()
-			fmt.Println("Passed a Normal Token", tn)
-		/*
-			if len(tn) == 1 && tn[0] == 'a' {
-				if tt == html.StartTagToken {
-					depth++
+			// fmt.Println("Passed a Start Tag Token", string(tn))
+			if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
+				fmt.Println("Passed a Start Tag Token", string(tn))
+				link, err := extractLinkFromElement(z, "src")
+				if err == nil {
+					fmt.Println("<script> contains 'src'")
+					cacheResource(link)
 				} else {
-					depth--
+					fmt.Println(err)
 				}
 			}
-		*/
+			if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
+				fmt.Println("Passed a Start Tag Token", string(tn))
+				link, err := extractLinkFromElement(z, "href")
+				if err == nil {
+					fmt.Println("<link> contains 'href'")
+					cacheResource(link)
+				} else {
+					fmt.Println(err)
+				}
+			}
+			/*
+				if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
+					expectScript = true
+				} else if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
+					expectLink = true
+				}
+			*/
+		case html.EndTagToken:
+			continue
+			/*
+				tn, _ := z.TagName()
+				fmt.Println("Passed an End Tag Token", string(tn))
+				if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
+					expectScript = false
+				} else if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
+					expectLink = false
+				}
+			*/
 		default:
 			fmt.Println("Passed a token of other types")
 		}
