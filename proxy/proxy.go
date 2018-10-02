@@ -113,6 +113,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 					fmt.Println("Parsing the response body to find more resources to cache")
 					err = ParseResponseBody(&responseBuffer, serverResponse.Header)
 					if err != nil {
+						// we probably have an EOF error, which is fine
 						fmt.Println(err)
 					}
 				}
