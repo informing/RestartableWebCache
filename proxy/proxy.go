@@ -113,22 +113,17 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 				fmt.Println("Calling cache.Save to cache the server response")
 				defaultProxy.cache.Save(*resourceURL, &responseBuffer)
 
-				fmt.Println("Parsing the response body to find more resources to cache")
-				err = ParseResponseBody(serverResponse.Body)
-				if err != nil {
-					fmt.Println(err)
+				if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
+					fmt.Println("Parsing the response body to find more resources to cache")
+					err = ParseResponseBody(&responseBuffer)
+					if err != nil {
+						fmt.Println(err)
+					}
 				}
 			}
 		} else {
 			fmt.Println("Got the requested resource from cache")
 			fmt.Println("Serving content to browser...")
-			// proxyResponseData := make([]byte, 0)
-			// _, err := cachedResponse.Write(proxyResponseData)
-			// if err == nil {
-			// 	proxyWriter.Write(proxyResponseData)
-			// } else {
-			// 	fmt.Println(err)
-			// }
 
 			// Make a temporary copy of this cache resource.  We do not
 			// want to drain the actual buffer in the cache.
@@ -170,25 +165,20 @@ func ParseResponseBody(r io.Reader) error {
 	// depth := 0
 	z := html.NewTokenizer(r)
 	for {
-		fmt.Println("forever")
 		tt := z.Next()
+		fmt.Println("Fetching next token", tt)
 		switch tt {
 		case html.ErrorToken:
+			// Ultimately we will get to this point (EOF)
 			return z.Err()
-		/*
-			case html.TextToken:
-				if depth > 0 {
-					// emitBytes should copy the []byte it receives,
-					// if it doesn't process it immediately.
-					emitBytes(z.Text())
-				}
-		*/
+		case html.TextToken:
+			continue
 		case html.SelfClosingTagToken:
 			tn, hasAttr := z.TagName()
 			if !hasAttr {
 				continue
 			} else {
-				fmt.Println("found", tn)
+				fmt.Println("Found a Self-Closing Token", tn)
 			}
 			if len(tn) == 3 && bytes.Equal(tn, []byte("img")) {
 				link, err := extractLinkFromElement(z, "src")
@@ -213,16 +203,18 @@ func ParseResponseBody(r io.Reader) error {
 			}
 		case html.StartTagToken, html.EndTagToken:
 			tn, _ := z.TagName()
-			fmt.Println("found", tn)
-			/*
-				if len(tn) == 1 && tn[0] == 'a' {
-					if tt == html.StartTagToken {
-						depth++
-					} else {
-						depth--
-					}
+			fmt.Println("Passed a Normal Token", tn)
+		/*
+			if len(tn) == 1 && tn[0] == 'a' {
+				if tt == html.StartTagToken {
+					depth++
+				} else {
+					depth--
 				}
-			*/
+			}
+		*/
+		default:
+			fmt.Println("Passed a token of other types")
 		}
 	}
 }
