@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.ugrad.cs.ubc.ca/CPSC416-2018W-T1/A2-i8b0b-e8y0b/cache"
@@ -60,27 +62,34 @@ func cacheResource(resourceLink string) (cached bool) {
 	return true
 }
 
+func hash(s string) string {
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return "[" + strconv.Itoa(int(h.Sum32())) + "]"
+}
+
 func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 	var err error
 	var serverResponse *http.Response
 	var proxyRequest *http.Request
 	client := &http.Client{}
 
-	fmt.Println("Client requested", clientRequest.RequestURI)
+	resourceURL, _ := url.Parse(clientRequest.RequestURI)
+	hashedLink := hash(clientRequest.RequestURI)
+	fmt.Println("Client requested", clientRequest.RequestURI, hashedLink)
 
-	resource, _ := url.Parse(clientRequest.RequestURI)
 	if strings.HasPrefix(clientRequest.RequestURI, "http://") && clientRequest.Method == "GET" {
 		// We only handle http GET requests
-		fmt.Println("Trying to fetch resource from cache.Get", clientRequest.RequestURI)
-		cachedResponse, err := defaultProxy.cache.Get(*resource)
+		fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
+		cachedResponse, err := defaultProxy.cache.Get(*resourceURL)
 		if err == cache.ErrResourceNotInCache {
-			fmt.Println("The requested resource is not in cache", clientRequest.RequestURI)
+			fmt.Println("The requested resource is not in cache", hashedLink)
 			proxyRequest, err = http.NewRequest(clientRequest.Method, clientRequest.RequestURI, clientRequest.Body)
 			for name, value := range clientRequest.Header {
 				proxyRequest.Header.Set(name, value[0])
 			}
 			serverResponse, err = client.Do(proxyRequest)
-			fmt.Println("Received response from the server", clientRequest.RequestURI)
+			fmt.Println("Received response from the server", hashedLink)
 
 			if err != nil {
 				http.Error(proxyWriter, err.Error(), http.StatusInternalServerError)
@@ -91,25 +100,23 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 				fmt.Println(err)
 				return
 			} else {
-				var responseBuffer bytes.Buffer
-				responseBuffer.Write(responseBodyData)
-				fmt.Println("Calling cache.Save to cache the server response")
-				defaultProxy.cache.Save(*resource, &responseBuffer)
-
 				for k, v := range serverResponse.Header {
 					proxyWriter.Header().Set(k, v[0])
 				}
-				fmt.Println("bef wrote")
 				proxyWriter.WriteHeader(serverResponse.StatusCode)
-				fmt.Println("wrote")
 				proxyWriter.Write(responseBodyData)
 				serverResponse.Body.Close()
-				fmt.Println("sent")
-			}
-			fmt.Println("parsing...")
-			err = parse(serverResponse.Body)
-			if err != nil {
-				fmt.Println(err)
+
+				var responseBuffer bytes.Buffer
+				responseBuffer.Write(responseBodyData)
+				fmt.Println("Calling cache.Save to cache the server response")
+				defaultProxy.cache.Save(*resourceURL, &responseBuffer)
+
+				fmt.Println("Parsing the response body to find more resources to cache")
+				err = parse(serverResponse.Body)
+				if err != nil {
+					fmt.Println(err)
+				}
 			}
 		} else {
 			fmt.Println("Got the requested resource from cache")
@@ -140,11 +147,9 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 		}
 		proxyWriter.WriteHeader(serverResponse.StatusCode)
 		defer serverResponse.Body.Close()
-		body, _ := ioutil.ReadAll(serverResponse.Body)
-		proxyWriter.Write(body)
+		responseBodyData, _ := ioutil.ReadAll(serverResponse.Body)
+		proxyWriter.Write(responseBodyData)
 	}
-
-	// PrintHTTP(req, resp)
 }
 
 func parse(r io.Reader) error {
