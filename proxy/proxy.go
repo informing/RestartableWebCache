@@ -42,7 +42,7 @@ func extractLinkFromElement(z *html.Tokenizer, elementTag string) (link string, 
 	return "", errors.New("cannot locate the resource")
 }
 
-func cacheResource(resourceLink string) (cached bool) {
+func cacheResource(resourceLink string, h http.Header) (cached bool) {
 	// check if Resouce URI is relative
 	debugPrompt := "func cacheResource:"
 	if resourceLink[0] == '/' && !strings.HasPrefix(resourceLink, "//") {
@@ -64,8 +64,9 @@ func cacheResource(resourceLink string) (cached bool) {
 	var responseBuffer bytes.Buffer
 	responseBuffer.Write(responseBodyData)
 	resourceURL, _ := url.Parse(resourceLink)
+
 	fmt.Println(debugPrompt, "saving", resourceLink, "to cache")
-	defaultProxy.cache.Save(*resourceURL, &responseBuffer)
+	defaultProxy.cache.SaveWithHeaders(*resourceURL, &responseBuffer, h)
 	return true
 }
 
@@ -88,7 +89,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 	if strings.HasPrefix(clientRequest.RequestURI, "http://") && clientRequest.Method == "GET" {
 		// We only handle http GET requests
 		fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
-		cachedResponse, err := defaultProxy.cache.Get(*resourceURL)
+		cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
 		if err == cache.ErrResourceNotInCache {
 			fmt.Println("The requested resource is not in cache", hashedLink)
 			proxyRequest, err = http.NewRequest(clientRequest.Method, clientRequest.RequestURI, clientRequest.Body)
@@ -111,17 +112,19 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 					proxyWriter.Header().Set(k, v[0])
 				}
 				proxyWriter.WriteHeader(serverResponse.StatusCode)
-				proxyWriter.Write(responseBodyData)
-				defer serverResponse.Body.Close()
 
 				var responseBuffer bytes.Buffer
-				responseBuffer.Write(responseBodyData)
+				multiWriter := io.MultiWriter(proxyWriter, &responseBuffer)
+				multiWriter.Write(responseBodyData)
+				defer serverResponse.Body.Close()
+
+				// responseBuffer.Write(responseBodyData)
 				fmt.Println("Calling cache.Save to cache the server response")
-				defaultProxy.cache.Save(*resourceURL, &responseBuffer)
+				defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
 
 				if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
 					fmt.Println("Parsing the response body to find more resources to cache")
-					err = ParseResponseBody(&responseBuffer)
+					err = ParseResponseBody(&responseBuffer, serverResponse.Header)
 					if err != nil {
 						fmt.Println(err)
 					}
@@ -137,6 +140,11 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 			if _, err := tmp.Write(cachedResponse.Bytes()); err != nil {
 				fmt.Println(err)
 				return
+			}
+
+			// Send back the original buffers
+			for k, v := range originalHeaders {
+				proxyWriter.Header().Set(k, v[0])
 			}
 			if _, err := io.Copy(proxyWriter, &tmp); err != nil {
 				fmt.Println(err)
@@ -167,7 +175,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 }
 
 // ParseResponseBody parses the given reader
-func ParseResponseBody(r io.Reader) error {
+func ParseResponseBody(r io.Reader, h http.Header) error {
 	// depth := 0
 	z := html.NewTokenizer(r)
 	// expectScript := false
@@ -203,21 +211,21 @@ func ParseResponseBody(r io.Reader) error {
 				link, err := extractLinkFromElement(z, "src")
 				if err == nil {
 					fmt.Println("<img> contains 'src'")
-					cacheResource(link)
+					cacheResource(link, h)
 				}
 			}
 			if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
 				link, err := extractLinkFromElement(z, "src")
 				if err == nil {
 					fmt.Println("<script> contains 'src'")
-					cacheResource(link)
+					cacheResource(link, h)
 				}
 			}
 			if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
 				link, err := extractLinkFromElement(z, "href")
 				if err == nil {
 					fmt.Println("<link> contains 'href'")
-					cacheResource(link)
+					cacheResource(link, h)
 				}
 			}
 		case html.StartTagToken:
@@ -228,7 +236,7 @@ func ParseResponseBody(r io.Reader) error {
 				link, err := extractLinkFromElement(z, "src")
 				if err == nil {
 					fmt.Println("<script> contains 'src'")
-					cacheResource(link)
+					cacheResource(link, h)
 				} else {
 					fmt.Println(err)
 				}
@@ -238,7 +246,7 @@ func ParseResponseBody(r io.Reader) error {
 				link, err := extractLinkFromElement(z, "href")
 				if err == nil {
 					fmt.Println("<link> contains 'href'")
-					cacheResource(link)
+					cacheResource(link, h)
 				} else {
 					fmt.Println(err)
 				}

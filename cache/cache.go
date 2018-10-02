@@ -497,7 +497,7 @@ func (cache *lfu) SaveWithHeaders(url url.URL, fi *bytes.Buffer, h http.Header) 
 	cache.Lock()
 	defer cache.Unlock()
 
-	err = cache.saveResource(url, fi, getLRU, h)
+	err = cache.saveResource(url, fi, getLFU, h)
 	return
 }
 
