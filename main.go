@@ -62,7 +62,7 @@ func parseArgs() (ipPort, replacementPolicy string, size int, expirationTime tim
 
 	// Create a time.Duration for expirationTime.
 	expirationTime = time.Duration(expTimeInt) * time.Second
-	log.Printf("Parsed command line arguments:\nIPPort: %s\nReplacement policy: %s\nMax cache size: %d\nCache item expiry time: %s\n",
+	log.Printf("Parsed command line arguments:\nIPPort: %s\nReplacement policy: %s\nMax cache size: %d mb\nCache item expiry time: %s\n",
 		ipPort, replacementPolicy, size, expirationTime.String())
 	return
 }
