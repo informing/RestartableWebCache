@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,11 @@ var (
 	ErrResourceNotInCache     = errors.New("Requested resource was not found in cache")
 	ErrCouldntReadResourceLen = errors.New("Couldnt read length of requested resource")
 )
+
+// headerPrefix denotes a header file from a response body file.
+// response body file name:  justin.jpg
+// has header file name: -h-e-a-d-e-r-justin.jpg
+var headerPrefix = "-h-e-a-d-e-r-"
 
 // Cache is a generic cache interface type.
 // All operations on Cache should be thread safe.
@@ -135,6 +141,20 @@ func FromDiskString(ds string) (resURL url.URL) {
 	return *url
 }
 
+// ToHeaderDiskString is Similar to two functions as above, but the res string
+// is the file in which corresponding headers are stored.
+func ToHeaderDiskString(url url.URL) (res string) {
+	return headerPrefix + strings.Replace(url.String(), "/", "-", -1)
+}
+
+// FromHeaderDiskString is Similar to two functions as above, but the res string
+// is the file in which corresponding headers are stored.
+func FromHeaderDiskString(ds string) (resURL url.URL) {
+	newString := strings.Replace(ds[13:], "-", "/", -1)
+	url, _ := url.Parse(newString)
+	return *url
+}
+
 // saveResource saves fi to cache. Files are saved immediately to the in-memory cache,
 // and a goroutine is dispatched to save the file to disk.  If fi won't fit in the cache,
 // resources are removed from cache until fi can be saved.  The provided function argument
@@ -196,6 +216,29 @@ func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo fun
 				}
 			}()
 
+			// Also save the headers to disk.
+			// Pass in a copy of h, just in case.
+			go func(h http.Header) {
+				// Create the header file.
+				headerSavePath := filepath.Join(cache.mountPath, ToHeaderDiskString(url))
+				toSave, err := os.Create(headerSavePath)
+				if err != nil {
+					return
+				}
+				defer toSave.Close()
+
+				// Encode the header into the file.
+				enc := gob.NewEncoder(toSave)
+				if err = enc.Encode(h); err != nil {
+					return
+				}
+
+				// Flush file contents to disk.
+				if err = toSave.Sync(); err != nil {
+					return
+				}
+			}(h)
+
 			return true
 		}
 		// It didn't fit.
@@ -245,8 +288,15 @@ func (cache *memoryCache) deleteResource(url url.URL) (err error) {
 
 		// Dispatch goroutine to delete from disk.
 		go func() {
+			// Delete the response body file.
 			deletePath := filepath.Join(cache.mountPath, ToDiskString(url))
 			if err := os.Remove(deletePath); err != nil {
+				return
+			}
+
+			// And also delete the header gob-encoded file.
+			headerDeletePath := filepath.Join(cache.mountPath, ToHeaderDiskString(url))
+			if err := os.Remove(headerDeletePath); err != nil {
 				return
 			}
 		}()
@@ -363,12 +413,18 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 			}
 			fmt.Println("Loading the cache from disk at", mountPath, "...")
 			for _, file := range files {
-				// Only worry about files in the mount path here.
-				if !file.IsDir() {
-					size := file.Size()
-					name := file.Name()
+				size := file.Size()
+				name := file.Name()
 
+				// Only worry about files in the mount path here.
+				// Also only worry about response body files, not header files.
+				if !file.IsDir() && !strings.HasPrefix(name, headerPrefix) {
 					fi, err := os.Open(filepath.Join(mountPath, name))
+					if err != nil {
+						continue
+					}
+
+					hfi, err := os.Open(filepath.Join(mountPath, headerPrefix+name))
 					if err != nil {
 						continue
 					}
@@ -376,6 +432,11 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 					// Re-build the url for this file.
 					// See FromDiskString for unhash rules.
 					url := FromDiskString(name)
+
+					// Re-build headers from header file too.
+					dec := gob.NewDecoder(hfi)
+					var h http.Header
+					err = dec.Decode(&h)
 					if err != nil {
 						continue
 					}
@@ -393,17 +454,20 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 							continue
 						}
 						memCache.memory[url] = &resource{
-							file:        &buf,
-							saveTime:    time.Now(),
-							accessCount: 1,
+							file:            &buf,
+							saveTime:        time.Now(),
+							accessCount:     1,
+							originalHeaders: h,
 						}
 						memCache.size = needSize
 						fmt.Printf("Loaded %s into memory\n", url.String())
 					}
+					fi.Close()
+					hfi.Close()
 				}
 			}
-			fmt.Println("Done loading files from cache")
 		}
+		fmt.Println("Done loading files from cache")
 	}
 
 	// Spin up a gouroutine to purge expired items every 10ms.
