@@ -28,21 +28,7 @@ type Proxy struct {
 // but that is out of the scope of what is needed for A2.
 var defaultProxy = &Proxy{}
 
-/*
-func extractLinkFromElement(z *html.Tokenizer, elementTag string) (link string, err error) {
-	debugPrompt := "func extractLinkFromElement:"
-	attr := []byte(elementTag)
-	for key, val, hasAttr := z.TagAttr(); hasAttr == true; key, val, hasAttr = z.TagAttr() {
-		if bytes.Equal(key, attr) {
-			fmt.Println(debugPrompt, "found", string(key), "with", string(val))
-			return string(val), nil
-		}
-		fmt.Println(debugPrompt, "passed", string(key), string(val))
-	}
-	return "", errors.New("cannot locate the resource")
-}
-*/
-func cacheResource(resourceLink string, h http.Header) (cached bool) {
+func cacheResource(resourceLink string) (cached bool) {
 	// check if Resouce URI is relative
 	debugPrompt := "func cacheResource:"
 	if resourceLink[0] == '/' && !strings.HasPrefix(resourceLink, "//") {
@@ -66,7 +52,8 @@ func cacheResource(resourceLink string, h http.Header) (cached bool) {
 	resourceURL, _ := url.Parse(resourceLink)
 
 	fmt.Println(debugPrompt, "saving", resourceLink, "to cache")
-	defaultProxy.cache.SaveWithHeaders(*resourceURL, &responseBuffer, h)
+	fmt.Println(debugPrompt, "... with header", response.Header)
+	defaultProxy.cache.SaveWithHeaders(*resourceURL, &responseBuffer, response.Header)
 	return true
 }
 
@@ -205,51 +192,22 @@ func ParseResponseBody(r io.Reader, h http.Header) error {
 			if "img" == token.Data {
 				for _, attr := range token.Attr {
 					if attr.Key == "src" {
-						cacheResource(attr.Val, h)
+						cacheResource(attr.Val)
 					}
 				}
 			}
-			/*
-				tn, hasAttr := z.TagName()
-				if !hasAttr {
-					continue
-				} else {
-					fmt.Println("Found a Self-Closing Token", string(tn))
-				}
-				if len(tn) == 3 && bytes.Equal(tn, []byte("img")) {
-					link, err := extractLinkFromElement(z, "src")
-					if err == nil {
-						fmt.Println("<img> contains 'src'")
-						cacheResource(link, h)
-					}
-				}
-					if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
-						link, err := extractLinkFromElement(z, "src")
-						if err == nil {
-							fmt.Println("<script> contains 'src'")
-							cacheResource(link, h)
-						}
-					}
-					if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
-						link, err := extractLinkFromElement(z, "href")
-						if err == nil {
-							fmt.Println("<link> contains 'href'")
-							cacheResource(link, h)
-						}
-					}
-			*/
 		case html.StartTagToken, html.EndTagToken:
 			token := z.Token()
 			if "script" == token.Data {
 				for _, attr := range token.Attr {
 					if attr.Key == "src" {
-						cacheResource(attr.Val, h)
+						cacheResource(attr.Val)
 					}
 				}
 			} else if "link" == token.Data {
 				for _, attr := range token.Attr {
 					if attr.Key == "href" {
-						cacheResource(attr.Val, h)
+						cacheResource(attr.Val)
 					}
 				}
 			}
