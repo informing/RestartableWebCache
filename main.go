@@ -76,7 +76,7 @@ func main() {
 	}
 
 	// Cache files on disk at root /cache.
-	mountPath := "/cache"
+	mountPath := "/tmp/cache"
 
 	// Create a new cache.
 	cache, err := cache.New(replacementPolicy, maxSize, expirationTime, mountPath)
