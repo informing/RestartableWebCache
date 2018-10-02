@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -29,6 +28,7 @@ type Proxy struct {
 // but that is out of the scope of what is needed for A2.
 var defaultProxy = &Proxy{}
 
+/*
 func extractLinkFromElement(z *html.Tokenizer, elementTag string) (link string, err error) {
 	debugPrompt := "func extractLinkFromElement:"
 	attr := []byte(elementTag)
@@ -41,7 +41,7 @@ func extractLinkFromElement(z *html.Tokenizer, elementTag string) (link string, 
 	}
 	return "", errors.New("cannot locate the resource")
 }
-
+*/
 func cacheResource(resourceLink string, h http.Header) (cached bool) {
 	// check if Resouce URI is relative
 	debugPrompt := "func cacheResource:"
@@ -201,74 +201,58 @@ func ParseResponseBody(r io.Reader, h http.Header) error {
 				}
 			*/
 		case html.SelfClosingTagToken:
-			tn, hasAttr := z.TagName()
-			if !hasAttr {
-				continue
-			} else {
-				fmt.Println("Found a Self-Closing Token", string(tn))
-			}
-			if len(tn) == 3 && bytes.Equal(tn, []byte("img")) {
-				link, err := extractLinkFromElement(z, "src")
-				if err == nil {
-					fmt.Println("<img> contains 'src'")
-					cacheResource(link, h)
-				}
-			}
-			if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
-				link, err := extractLinkFromElement(z, "src")
-				if err == nil {
-					fmt.Println("<script> contains 'src'")
-					cacheResource(link, h)
-				}
-			}
-			if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
-				link, err := extractLinkFromElement(z, "href")
-				if err == nil {
-					fmt.Println("<link> contains 'href'")
-					cacheResource(link, h)
-				}
-			}
-		case html.StartTagToken:
-			tn, _ := z.TagName()
-			// fmt.Println("Passed a Start Tag Token", string(tn))
-			if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
-				fmt.Println("Passed a Start Tag Token", string(tn))
-				link, err := extractLinkFromElement(z, "src")
-				if err == nil {
-					fmt.Println("<script> contains 'src'")
-					cacheResource(link, h)
-				} else {
-					fmt.Println(err)
-				}
-			}
-			if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
-				fmt.Println("Passed a Start Tag Token", string(tn))
-				link, err := extractLinkFromElement(z, "href")
-				if err == nil {
-					fmt.Println("<link> contains 'href'")
-					cacheResource(link, h)
-				} else {
-					fmt.Println(err)
+			token := z.Token()
+			if "img" == token.Data {
+				for _, attr := range token.Attr {
+					if attr.Key == "src" {
+						cacheResource(attr.Val, h)
+					}
 				}
 			}
 			/*
-				if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
-					expectScript = true
-				} else if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
-					expectLink = true
+				tn, hasAttr := z.TagName()
+				if !hasAttr {
+					continue
+				} else {
+					fmt.Println("Found a Self-Closing Token", string(tn))
 				}
-			*/
-		case html.EndTagToken:
-			continue
-			/*
-				tn, _ := z.TagName()
-				fmt.Println("Passed an End Tag Token", string(tn))
-				if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
-					expectScript = false
-				} else if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
-					expectLink = false
+				if len(tn) == 3 && bytes.Equal(tn, []byte("img")) {
+					link, err := extractLinkFromElement(z, "src")
+					if err == nil {
+						fmt.Println("<img> contains 'src'")
+						cacheResource(link, h)
+					}
 				}
+					if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
+						link, err := extractLinkFromElement(z, "src")
+						if err == nil {
+							fmt.Println("<script> contains 'src'")
+							cacheResource(link, h)
+						}
+					}
+					if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
+						link, err := extractLinkFromElement(z, "href")
+						if err == nil {
+							fmt.Println("<link> contains 'href'")
+							cacheResource(link, h)
+						}
+					}
 			*/
+		case html.StartTagToken, html.EndTagToken:
+			token := z.Token()
+			if "script" == token.Data {
+				for _, attr := range token.Attr {
+					if attr.Key == "src" {
+						cacheResource(attr.Val, h)
+					}
+				}
+			} else if "link" == token.Data {
+				for _, attr := range token.Attr {
+					if attr.Key == "href" {
+						cacheResource(attr.Val, h)
+					}
+				}
+			}
 		default:
 			fmt.Println("Passed a token of other types")
 		}
