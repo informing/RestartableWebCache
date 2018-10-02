@@ -63,7 +63,7 @@ func init() {
 		return
 	}
 	testURL200 = *url200
-	bytes200 := make([]byte, 200)
+	bytes200 := make([]byte, 200*1000000)
 	if _, err = testBuffer200.Write(bytes200); err != nil {
 		return
 	}
@@ -73,7 +73,7 @@ func init() {
 		return
 	}
 	testURL500 = *url500
-	bytes500 := make([]byte, 500)
+	bytes500 := make([]byte, 500*1000000)
 	if _, err = testBuffer500.Write(bytes500); err != nil {
 		return
 	}
@@ -83,7 +83,7 @@ func init() {
 		return
 	}
 	testURL700 = *url700
-	bytes700 := make([]byte, 700)
+	bytes700 := make([]byte, 700*1000000)
 	if _, err = testBuffer700.Write(bytes700); err != nil {
 		return
 	}
@@ -93,7 +93,7 @@ func init() {
 		return
 	}
 	testURL900 = *url900
-	bytes900 := make([]byte, 900)
+	bytes900 := make([]byte, 900*1000000)
 	if _, err = testBuffer900.Write(bytes900); err != nil {
 		return
 	}
@@ -352,7 +352,7 @@ func TestLRU(t *testing.T) {
 		}
 
 		// Sleep to allow disk saves to normalize.
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(2 * time.Second)
 
 		fipath := filepath.Join(mountPath, cache.ToDiskString(testURL900))
 		if _, err = os.Stat(fipath); os.IsNotExist(err) {
@@ -560,13 +560,13 @@ func TestLoadFromDisk(t *testing.T) {
 	}
 
 	t.Run("Cache should fill up with files from the disk", func(t *testing.T) {
-		if lruCache.Size() > 1024 {
+		if lruCache.Size() > 1024*1000000 {
 			t.Errorf("Overfilled cache on startup.  Cache size: %d", lruCache.Size())
 		}
 
 		// The cache can be filled, with the available permutations, to either 700 or 900.
 		// Assert that size here.
-		if lruCache.Size() != 700 && lruCache.Size() != 900 {
+		if lruCache.Size() != 700*1000000 && lruCache.Size() != 900*1000000 {
 			t.Errorf("Cache was filled on startup to an impossible size.  Cache size: %d", lruCache.Size())
 		}
 	})

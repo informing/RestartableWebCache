@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -47,6 +48,14 @@ type Cache interface {
 	// Save saves a resource to the cache.
 	Save(url url.URL, fi *bytes.Buffer) error
 
+	// GetWithHeaders retrieves a resource from the cache along with
+	// the http.Header previously saved.
+	GetWithHeaders(url url.URL) (*bytes.Buffer, http.Header, error)
+
+	// SaveWithHeaders saves a resource to the cache along with
+	// http.Header h for later use.
+	SaveWithHeaders(url url.URL, fi *bytes.Buffer, h http.Header) error
+
 	// Size returns the current size of the cache (not the max size).
 	Size() int
 }
@@ -79,9 +88,10 @@ type memoryCache struct {
 // this resource has been accessed via the cache.  Both of these metrics
 // are useful for implemented LRU / LFU replacement policies
 type resource struct {
-	file        *bytes.Buffer
-	saveTime    time.Time
-	accessCount int
+	file            *bytes.Buffer
+	saveTime        time.Time
+	accessCount     int
+	originalHeaders http.Header
 }
 
 // fileSize returns the size, in bytes, of fi.
@@ -109,13 +119,16 @@ func (cache *memoryCache) purgeExpired() {
 }
 
 // ToDiskString converts a url to its disk filename.
-// TODO: make the reversable hash less sketchy.
+// Disk strings (disk filenames) are simply urls
+// with all '/' characters replaced with '-'.  This
+// allows the cache to save all data within a single folder
+// without worrying about path issues.
 func ToDiskString(url url.URL) (res string) {
 	return strings.Replace(url.String(), "/", "-", -1)
 }
 
 // FromDiskString converts a disk string to its url.
-// TODO: make the reversable hash less sketchy.
+// See note on disk strings in ToDiskString docs.
 func FromDiskString(ds string) (resURL url.URL) {
 	newString := strings.Replace(ds, "-", "/", -1)
 	url, _ := url.Parse(newString)
@@ -126,7 +139,7 @@ func FromDiskString(ds string) (resURL url.URL) {
 // and a goroutine is dispatched to save the file to disk.  If fi won't fit in the cache,
 // resources are removed from cache until fi can be saved.  The provided function argument
 // nextToGo determines which resource is the next item to be removed from the cache.
-func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo func(cache *memoryCache) url.URL) (err error) {
+func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo func(cache *memoryCache) url.URL, h http.Header) (err error) {
 
 	// save tries to save fi of size fiSize to cache.  If it succeeds, return true,
 	// if not, return false.
@@ -153,8 +166,9 @@ func (cache *memoryCache) saveResource(u url.URL, fi *bytes.Buffer, nextToGo fun
 		// If it fits, save it and return.
 		if needSize <= cache.maxSize {
 			cache.memory[url] = &resource{
-				file:     fi,
-				saveTime: time.Now(),
+				file:            fi,
+				saveTime:        time.Now(),
+				originalHeaders: h,
 			}
 			cache.size = needSize
 
@@ -247,16 +261,16 @@ func (cache *memoryCache) deleteResource(url url.URL) (err error) {
 // Everytime a resource is retrieved, its accessCount increments by 1.
 // If the resource specified by url does not exist in the cache, an appropriate error
 // is returned.
-func (cache *memoryCache) getResource(url url.URL) (fi *bytes.Buffer, err error) {
+func (cache *memoryCache) getResource(url url.URL) (fi *bytes.Buffer, h http.Header, err error) {
 	if resource, ok := cache.memory[url]; ok {
 		// The resource is here; increment its accessCount and return it.
 		// Also, set its saveTime to time.Now().
 		resource.accessCount++
 		resource.saveTime = time.Now()
-		return resource.file, nil
+		return resource.file, resource.originalHeaders, nil
 	}
 	// Resource was not found, error.
-	return nil, ErrResourceNotInCache
+	return nil, nil, ErrResourceNotInCache
 }
 
 // getLFU finds the LFU used item in cache, and returns its url.
@@ -412,7 +426,16 @@ func (cache *lru) Get(url url.URL) (fi *bytes.Buffer, err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
-	fi, err = cache.getResource(url)
+	fi, _, err = cache.getResource(url)
+	return
+}
+
+// GetWithHeaders implements Cache.GetWithHeaders for an LRU cache.
+func (cache *lru) GetWithHeaders(url url.URL) (fi *bytes.Buffer, h http.Header, err error) {
+	cache.Lock()
+	defer cache.Unlock()
+
+	fi, h, err = cache.getResource(url)
 	return
 }
 
@@ -421,7 +444,16 @@ func (cache *lru) Save(url url.URL, fi *bytes.Buffer) (err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
-	err = cache.saveResource(url, fi, getLRU)
+	err = cache.saveResource(url, fi, getLRU, nil)
+	return
+}
+
+// SaveWithHeaders implements Cache.SaveWithHeaders for an LRU cache.
+func (cache *lru) SaveWithHeaders(url url.URL, fi *bytes.Buffer, h http.Header) (err error) {
+	cache.Lock()
+	defer cache.Unlock()
+
+	err = cache.saveResource(url, fi, getLRU, h)
 	return
 }
 
@@ -438,7 +470,16 @@ func (cache *lfu) Get(url url.URL) (fi *bytes.Buffer, err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
-	fi, err = cache.getResource(url)
+	fi, _, err = cache.getResource(url)
+	return
+}
+
+// GetWithHeaders implements Cache.GetWithHeaders for an LRU cache.
+func (cache *lfu) GetWithHeaders(url url.URL) (fi *bytes.Buffer, h http.Header, err error) {
+	cache.Lock()
+	defer cache.Unlock()
+
+	fi, h, err = cache.getResource(url)
 	return
 }
 
@@ -447,7 +488,16 @@ func (cache *lfu) Save(url url.URL, fi *bytes.Buffer) (err error) {
 	cache.Lock()
 	defer cache.Unlock()
 
-	err = cache.saveResource(url, fi, getLFU)
+	err = cache.saveResource(url, fi, getLFU, nil)
+	return
+}
+
+// SaveWithHeaders implements Cache.SaveWithHeaders for an LRU cache.
+func (cache *lfu) SaveWithHeaders(url url.URL, fi *bytes.Buffer, h http.Header) (err error) {
+	cache.Lock()
+	defer cache.Unlock()
+
+	err = cache.saveResource(url, fi, getLRU, h)
 	return
 }
 
