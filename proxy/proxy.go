@@ -76,7 +76,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 
 	resourceURL, _ := url.Parse(clientRequest.RequestURI)
 	hashedLink := hash(clientRequest.RequestURI)
-	fmt.Println("Client requested", clientRequest.RequestURI, hashedLink)
+	fmt.Println("Client requested", clientRequest.Method, clientRequest.RequestURI, hashedLink)
 
 	if strings.HasPrefix(clientRequest.RequestURI, "http://") && clientRequest.Method == "GET" {
 		// We only handle http GET requests
@@ -105,7 +105,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 				}
 				proxyWriter.WriteHeader(serverResponse.StatusCode)
 				proxyWriter.Write(responseBodyData)
-				serverResponse.Body.Close()
+				defer serverResponse.Body.Close()
 
 				var responseBuffer bytes.Buffer
 				responseBuffer.Write(responseBodyData)
@@ -135,7 +135,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 			proxyRequest.Header.Set(name, value[0])
 		}
 		serverResponse, err = client.Do(proxyRequest)
-		clientRequest.Body.Close()
+		defer clientRequest.Body.Close()
 
 		if err != nil {
 			http.Error(proxyWriter, err.Error(), http.StatusInternalServerError)
