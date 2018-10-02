@@ -29,11 +29,11 @@ type Proxy struct {
 // but that is out of the scope of what is needed for A2.
 var defaultProxy = &Proxy{}
 
-func parseLink(z *html.Tokenizer, expectedAttr string) (link string, err error) {
-	attr := []byte(expectedAttr)
+func extractLinkFromElement(z *html.Tokenizer, elementTag string) (link string, err error) {
+	attr := []byte(elementTag)
 	for key, val, hasAttr := z.TagAttr(); hasAttr == true; key, val, hasAttr = z.TagAttr() {
 		if bytes.Equal(key, attr) {
-			fmt.Println("func parseLink: found", key, "with", val)
+			fmt.Println("func extractLinkFromElement: found", key, "with", val)
 			return string(val), nil
 		}
 		fmt.Println(key, val)
@@ -113,7 +113,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 				defaultProxy.cache.Save(*resourceURL, &responseBuffer)
 
 				fmt.Println("Parsing the response body to find more resources to cache")
-				err = parse(serverResponse.Body)
+				err = parseResponseBody(serverResponse.Body)
 				if err != nil {
 					fmt.Println(err)
 				}
@@ -152,7 +152,7 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 	}
 }
 
-func parse(r io.Reader) error {
+func parseResponseBody(r io.Reader) error {
 	// depth := 0
 	z := html.NewTokenizer(r)
 	for {
@@ -177,20 +177,23 @@ func parse(r io.Reader) error {
 				fmt.Println("found", tn)
 			}
 			if len(tn) == 3 && bytes.Equal(tn, []byte("img")) {
-				link, err := parseLink(z, "src")
+				link, err := extractLinkFromElement(z, "src")
 				if err == nil {
+					fmt.Println("<img> contains 'src'")
 					cacheResource(link)
 				}
 			}
 			if len(tn) == 6 && bytes.Equal(tn, []byte("script")) {
-				link, err := parseLink(z, "src")
+				link, err := extractLinkFromElement(z, "src")
 				if err == nil {
+					fmt.Println("<script> contains 'src'")
 					cacheResource(link)
 				}
 			}
 			if len(tn) == 4 && bytes.Equal(tn, []byte("link")) {
-				link, err := parseLink(z, "href")
+				link, err := extractLinkFromElement(z, "href")
 				if err == nil {
+					fmt.Println("<link> contains 'href'")
 					cacheResource(link)
 				}
 			}
