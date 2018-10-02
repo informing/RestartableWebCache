@@ -120,11 +120,23 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 			}
 		} else {
 			fmt.Println("Got the requested resource from cache")
-			proxyResponseData := make([]byte, 0)
-			_, err := cachedResponse.Write(proxyResponseData)
-			if err == nil {
-				proxyWriter.Write(proxyResponseData)
-			} else {
+			fmt.Println("Serving content to browser...")
+			// proxyResponseData := make([]byte, 0)
+			// _, err := cachedResponse.Write(proxyResponseData)
+			// if err == nil {
+			// 	proxyWriter.Write(proxyResponseData)
+			// } else {
+			// 	fmt.Println(err)
+			// }
+
+			// Make a temporary copy of this cache resource.  We do not
+			// want to drain the actual buffer in the cache.
+			var tmp bytes.Buffer
+			if _, err := tmp.Write(cachedResponse.Bytes()); err != nil {
+				fmt.Println(err)
+				return
+			}
+			if _, err := io.Copy(proxyWriter, &tmp); err != nil {
 				fmt.Println(err)
 			}
 		}
@@ -222,6 +234,7 @@ func UseCache(cache cache.Cache) { defaultProxy.cache = cache }
 // InterceptGET ...
 func InterceptGET() (err error) {
 	// Some shit here.
+	fmt.Println("Intercepting requests on", defaultProxy.ipPort, "...")
 	http.HandleFunc("/", handler)
 	log.Fatal(http.ListenAndServe(defaultProxy.ipPort, nil))
 	return

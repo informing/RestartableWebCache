@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -307,7 +308,7 @@ func (cache *memoryCache) getSize() (size int64) {
 // expiration.
 func New(policy string, size int, expiration time.Duration, mountPath string) (cache Cache, err error) {
 	memCache := &memoryCache{
-		maxSize:    int64(size),
+		maxSize:    int64(size * 1000000),
 		expiration: expiration,
 		memory:     make(map[url.URL]*resource),
 		mountPath:  mountPath,
@@ -346,6 +347,7 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 				// That doesn't mean callers shouldn't check for errors, they should.
 				return cache, err
 			}
+			fmt.Println("Loading the cache from disk at", mountPath, "...")
 			for _, file := range files {
 				// Only worry about files in the mount path here.
 				if !file.IsDir() {
@@ -382,9 +384,11 @@ func New(policy string, size int, expiration time.Duration, mountPath string) (c
 							accessCount: 1,
 						}
 						memCache.size = needSize
+						fmt.Printf("Loaded %s into memory\n", url.String())
 					}
 				}
 			}
+			fmt.Println("Done loading files from cache")
 		}
 	}
 
