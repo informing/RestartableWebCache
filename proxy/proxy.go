@@ -59,7 +59,7 @@ func cacheResource(resourceLink string) (cached bool) {
 	responseBuffer.Write(responseBodyData)
 	resourceURL, _ := url.Parse(resourceLink)
 	fmt.Println("Saving", resourceLink, "to cache")
-	// defaultProxy.cache.Save(*resourceURL, &responseBuffer)
+	defaultProxy.cache.Save(*resourceURL, &responseBuffer)
 	return true
 }
 
