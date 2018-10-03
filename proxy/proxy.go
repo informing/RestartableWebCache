@@ -28,6 +28,16 @@ type Proxy struct {
 // but that is out of the scope of what is needed for A2.
 var defaultProxy = &Proxy{}
 
+func dumpLink(link string) (dumpedLink string) {
+	return "http://" + defaultProxy.ipPort + "/?referee=" + strings.Replace(link, "/", ":", -1)
+}
+
+func loadLink(link string) (loadedLink string) {
+	components := strings.Split(link, "?referee=")
+	originalLink := strings.Replace(components[1], "-", "/", -1)
+	return originalLink
+}
+
 func cacheResource(resourceLink string) (cached bool) {
 	// check if Resouce URI is relative
 	debugPrompt := "func cacheResource:"
@@ -63,118 +73,161 @@ func hash(s string) string {
 	return "[" + strconv.Itoa(int(h.Sum32())) + "]"
 }
 
-func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
-	var err error
-	var serverResponse *http.Response
-	var proxyRequest *http.Request
-	client := &http.Client{}
+func serveDirectly(proxyWriter http.ResponseWriter, client *http.Client, clientRequest *http.Request) {
+	proxyRequest, err := http.NewRequest(clientRequest.Method, clientRequest.RequestURI, clientRequest.Body)
+	for name, value := range clientRequest.Header {
+		proxyRequest.Header.Set(name, value[0])
+	}
+	serverResponse, err := client.Do(proxyRequest)
+	defer clientRequest.Body.Close()
 
+	if err != nil {
+		http.Error(proxyWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for k, v := range serverResponse.Header {
+		proxyWriter.Header().Set(k, v[0])
+	}
+	proxyWriter.WriteHeader(serverResponse.StatusCode)
+	defer serverResponse.Body.Close()
+	responseBodyData, _ := ioutil.ReadAll(serverResponse.Body)
+	proxyWriter.Write(responseBodyData)
+}
+
+func serveAndCache(proxyWriter http.ResponseWriter, client *http.Client, clientRequest *http.Request) {
 	resourceURL, _ := url.Parse(clientRequest.RequestURI)
 	hashedLink := hash(clientRequest.RequestURI)
-	fmt.Println("Client requested", clientRequest.Method, clientRequest.RequestURI, hashedLink)
+
+	fmt.Println("The requested resource is not in cache", hashedLink)
+	proxyRequest, err := http.NewRequest(clientRequest.Method, clientRequest.RequestURI, clientRequest.Body)
+	for name, value := range clientRequest.Header {
+		proxyRequest.Header.Set(name, value[0])
+	}
+	serverResponse, err := client.Do(proxyRequest)
+	fmt.Println("Received response from the server", hashedLink)
+
+	if err != nil {
+		http.Error(proxyWriter, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	responseBodyData, err := ioutil.ReadAll(serverResponse.Body)
+	if err != nil {
+		fmt.Println(err)
+		return
+	} else {
+		for k, v := range serverResponse.Header {
+			// except for size
+			if k != "Content-Length" {
+				proxyWriter.Header().Set(k, v[0])
+			}
+		}
+		proxyWriter.WriteHeader(serverResponse.StatusCode)
+
+		var responseBuffer, parseBuffer bytes.Buffer
+		multiWriter := io.MultiWriter(&parseBuffer, &responseBuffer)
+		multiWriter.Write(responseBodyData)
+		defer serverResponse.Body.Close()
+
+		// responseBuffer.Write(responseBodyData)
+		fmt.Println("Calling cache.Save to cache the server response")
+		defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
+
+		if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
+			fmt.Println("Parsing the response body to find more resources to cache")
+			lists, _ := ParseResponseBody(&parseBuffer, serverResponse.Header)
+			dumpedResponseData := responseBuffer.Bytes()
+			for k, v := range lists {
+				dumpedResponseData = bytes.Replace(dumpedResponseData, []byte(k), []byte(v), -1)
+			}
+			proxyWriter.Write(dumpedResponseData)
+		}
+	}
+}
+
+func serveWithCache(proxyWriter http.ResponseWriter, originalHeaders http.Header, cachedResponseBuffer *bytes.Buffer) {
+	fmt.Println("Got the requested resource from cache")
+	fmt.Println("Serving content to browser...")
+
+	// Make a temporary copy of this cache resource.  We do not
+	// want to drain the actual buffer in the cache.
+	var tmp bytes.Buffer
+	if _, err := tmp.Write(cachedResponseBuffer.Bytes()); err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	// Send back the original buffers
+	for k, v := range originalHeaders {
+		proxyWriter.Header().Set(k, v[0])
+	}
+	if _, err := io.Copy(proxyWriter, &tmp); err != nil {
+		fmt.Println(err)
+	}
+}
+
+func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
+	// var err error
+	// var serverResponse *http.Response
+	// var proxyRequest *http.Request
+	client := &http.Client{}
+
+	fmt.Println("Client requested", clientRequest.Method, clientRequest.RequestURI)
 
 	if strings.HasPrefix(clientRequest.RequestURI, "http://") && clientRequest.Method == "GET" {
 		// We only handle http GET requests
-		fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
-		cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
-		if err == cache.ErrResourceNotInCache {
-			fmt.Println("The requested resource is not in cache", hashedLink)
-			proxyRequest, err = http.NewRequest(clientRequest.Method, clientRequest.RequestURI, clientRequest.Body)
-			for name, value := range clientRequest.Header {
-				proxyRequest.Header.Set(name, value[0])
-			}
-			serverResponse, err = client.Do(proxyRequest)
-			fmt.Println("Received response from the server", hashedLink)
+		if strings.HasPrefix(clientRequest.RequestURI, "http://"+defaultProxy.ipPort) {
+			// this is a local/rewritten request
+			originalLink := loadLink(clientRequest.RequestURI)
+			hashedLink := hash(originalLink)
 
-			if err != nil {
-				http.Error(proxyWriter, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			responseBodyData, err := ioutil.ReadAll(serverResponse.Body)
-			if err != nil {
-				fmt.Println(err)
-				return
+			fmt.Println("... alias =", originalLink, hashedLink)
+
+			resourceURL, _ := url.Parse(originalLink)
+			fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
+			cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
+			if err == cache.ErrResourceNotInCache {
+				// resouce not in cache should not happen, but we can deal with it
+				fmt.Println("The requested resource is not in cache", hashedLink)
+				serveAndCache(proxyWriter, client, clientRequest)
 			} else {
-				for k, v := range serverResponse.Header {
-					proxyWriter.Header().Set(k, v[0])
-				}
-				proxyWriter.WriteHeader(serverResponse.StatusCode)
-
-				var responseBuffer bytes.Buffer
-				multiWriter := io.MultiWriter(proxyWriter, &responseBuffer)
-				multiWriter.Write(responseBodyData)
-				defer serverResponse.Body.Close()
-
-				// responseBuffer.Write(responseBodyData)
-				fmt.Println("Calling cache.Save to cache the server response")
-				defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
-
-				if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
-					fmt.Println("Parsing the response body to find more resources to cache")
-					err = ParseResponseBody(&responseBuffer, serverResponse.Header)
-					if err != nil {
-						// we probably have an EOF error, which is fine
-						fmt.Println(err)
-					}
-				}
+				// resource is in cache and we can serve it
+				serveWithCache(proxyWriter, originalHeaders, cachedResponse)
 			}
 		} else {
-			fmt.Println("Got the requested resource from cache")
-			fmt.Println("Serving content to browser...")
-
-			// Make a temporary copy of this cache resource.  We do not
-			// want to drain the actual buffer in the cache.
-			var tmp bytes.Buffer
-			if _, err := tmp.Write(cachedResponse.Bytes()); err != nil {
-				fmt.Println(err)
-				return
-			}
-
-			// Send back the original buffers
-			for k, v := range originalHeaders {
-				proxyWriter.Header().Set(k, v[0])
-			}
-			if _, err := io.Copy(proxyWriter, &tmp); err != nil {
-				fmt.Println(err)
+			// this is not a local/rewritten request
+			hashedLink := hash(clientRequest.RequestURI)
+			resourceURL, _ := url.Parse(clientRequest.RequestURI)
+			fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
+			cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
+			if err == cache.ErrResourceNotInCache {
+				serveAndCache(proxyWriter, client, clientRequest)
+			} else {
+				serveWithCache(proxyWriter, originalHeaders, cachedResponse)
 			}
 		}
 	} else {
+		// ... http POST and other stuffs go here
 		fmt.Println("Cannot parse the provided URI, will simply serve w/o caching")
-		proxyRequest, err = http.NewRequest(clientRequest.Method, clientRequest.RequestURI, clientRequest.Body)
-		for name, value := range clientRequest.Header {
-			proxyRequest.Header.Set(name, value[0])
-		}
-		serverResponse, err = client.Do(proxyRequest)
-		defer clientRequest.Body.Close()
-
-		if err != nil {
-			http.Error(proxyWriter, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		for k, v := range serverResponse.Header {
-			proxyWriter.Header().Set(k, v[0])
-		}
-		proxyWriter.WriteHeader(serverResponse.StatusCode)
-		defer serverResponse.Body.Close()
-		responseBodyData, _ := ioutil.ReadAll(serverResponse.Body)
-		proxyWriter.Write(responseBodyData)
+		serveDirectly(proxyWriter, client, clientRequest)
 	}
 }
 
 // ParseResponseBody parses the given reader
-func ParseResponseBody(r io.Reader, h http.Header) error {
+func ParseResponseBody(r io.Reader, h http.Header) (lists map[string]string, err error) {
 	// depth := 0
 	z := html.NewTokenizer(r)
+
 	// expectScript := false
 	// expectLink := false
+	links := make(map[string]string)
 	for {
 		tt := z.Next()
 		// fmt.Println("Fetching next token", tt)
 		switch tt {
 		case html.ErrorToken:
 			// Ultimately we will get to this point (EOF)
-			return z.Err()
+			return links, z.Err()
 		case html.TextToken:
 			continue
 			/*
@@ -193,7 +246,9 @@ func ParseResponseBody(r io.Reader, h http.Header) error {
 			if "img" == token.Data {
 				for _, attr := range token.Attr {
 					if attr.Key == "src" {
-						cacheResource(attr.Val)
+						if cacheResource(attr.Val) {
+							links[attr.Val] = dumpLink(attr.Val)
+						}
 					}
 				}
 			}
@@ -202,13 +257,17 @@ func ParseResponseBody(r io.Reader, h http.Header) error {
 			if "script" == token.Data {
 				for _, attr := range token.Attr {
 					if attr.Key == "src" {
-						cacheResource(attr.Val)
+						if cacheResource(attr.Val) {
+							links[attr.Val] = dumpLink(attr.Val)
+						}
 					}
 				}
 			} else if "link" == token.Data {
 				for _, attr := range token.Attr {
 					if attr.Key == "href" {
-						cacheResource(attr.Val)
+						if cacheResource(attr.Val) {
+							links[attr.Val] = dumpLink(attr.Val)
+						}
 					}
 				}
 			}
