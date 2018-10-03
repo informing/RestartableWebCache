@@ -29,13 +29,14 @@ type Proxy struct {
 var defaultProxy = &Proxy{}
 
 func dumpLink(link string) (dumpedLink string) {
-	return "http://" + defaultProxy.ipPort + "/?referee=" + strings.Replace(link, "/", ":", -1)
+	return "http://" + defaultProxy.ipPort + "/?referrer='" + strings.Replace(link, "/", "-", -1) + "'"
 }
 
 func loadLink(link string) (loadedLink string) {
-	components := strings.Split(link, "?referee=")
+	components := strings.Split(link, "?referrer='")
 	originalLink := strings.Replace(components[1], "-", "/", -1)
-	return originalLink
+	fmt.Println("loaded link", originalLink[0:len(originalLink)-1])
+	return originalLink[0 : len(originalLink)-1]
 }
 
 func cacheResource(resourceLink string) (cached bool) {
@@ -136,10 +137,12 @@ func serveAndCache(proxyWriter http.ResponseWriter, client *http.Client, clientR
 		if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
 			fmt.Println("Parsing the response body to find more resources to cache")
 			lists, _ := ParseResponseBody(&parseBuffer, serverResponse.Header)
+			fmt.Println("Going to replace:", lists)
 			dumpedResponseData := responseBuffer.Bytes()
 			for k, v := range lists {
 				dumpedResponseData = bytes.Replace(dumpedResponseData, []byte(k), []byte(v), -1)
 			}
+			fmt.Println(string(dumpedResponseData))
 			proxyWriter.Write(dumpedResponseData)
 		}
 	}
@@ -176,35 +179,33 @@ func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
 
 	if strings.HasPrefix(clientRequest.RequestURI, "http://") && clientRequest.Method == "GET" {
 		// We only handle http GET requests
-		if strings.HasPrefix(clientRequest.RequestURI, "http://"+defaultProxy.ipPort) {
-			// this is a local/rewritten request
-			originalLink := loadLink(clientRequest.RequestURI)
-			hashedLink := hash(originalLink)
-
-			fmt.Println("... alias =", originalLink, hashedLink)
-
-			resourceURL, _ := url.Parse(originalLink)
-			fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
-			cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
-			if err == cache.ErrResourceNotInCache {
-				// resouce not in cache should not happen, but we can deal with it
-				fmt.Println("The requested resource is not in cache", hashedLink)
-				serveAndCache(proxyWriter, client, clientRequest)
-			} else {
-				// resource is in cache and we can serve it
-				serveWithCache(proxyWriter, originalHeaders, cachedResponse)
-			}
+		// this is not a local/rewritten request
+		hashedLink := hash(clientRequest.RequestURI)
+		resourceURL, _ := url.Parse(clientRequest.RequestURI)
+		fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
+		cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
+		if err == cache.ErrResourceNotInCache {
+			serveAndCache(proxyWriter, client, clientRequest)
 		} else {
-			// this is not a local/rewritten request
-			hashedLink := hash(clientRequest.RequestURI)
-			resourceURL, _ := url.Parse(clientRequest.RequestURI)
-			fmt.Println("Trying to fetch resource from cache.Get", hashedLink)
-			cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
-			if err == cache.ErrResourceNotInCache {
-				serveAndCache(proxyWriter, client, clientRequest)
-			} else {
-				serveWithCache(proxyWriter, originalHeaders, cachedResponse)
-			}
+			serveWithCache(proxyWriter, originalHeaders, cachedResponse)
+		}
+	} else if strings.HasPrefix(clientRequest.RequestURI, "/?referrer") && clientRequest.Method == "GET" {
+		// this is a local/rewritten request
+		originalLink := loadLink(clientRequest.RequestURI)
+		hashedLink := hash(originalLink)
+
+		fmt.Println("... alias =", originalLink, hashedLink)
+
+		resourceURL, _ := url.Parse(originalLink)
+		fmt.Println("Trying to fetch resource from cache.Get", originalLink)
+		cachedResponse, originalHeaders, err := defaultProxy.cache.GetWithHeaders(*resourceURL)
+		if err == cache.ErrResourceNotInCache {
+			// resouce not in cache should not happen, but we can deal with it
+			fmt.Println("The requested resource is not in cache", hashedLink)
+			serveAndCache(proxyWriter, client, clientRequest)
+		} else {
+			// resource is in cache and we can serve it
+			serveWithCache(proxyWriter, originalHeaders, cachedResponse)
 		}
 	} else {
 		// ... http POST and other stuffs go here
