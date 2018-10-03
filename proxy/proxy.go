@@ -150,6 +150,11 @@ func serveAndCache(proxyWriter http.ResponseWriter, client *http.Client, clientR
 		if serverResponse.Header.Get("Cache-Control") == "public" || serverResponse.Header.Get("Cache-Control") == "" {
 			fmt.Println("Calling cache.Save to cache the server response")
 			defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
+		} else if serverResponse.Header.Get("Cache-Control") == "no-store" {
+			fmt.Println("Cache-Control specifies a no-store option")
+		} else {
+			fmt.Println("Cache-Control specifies a option that's not supported, but we'll cache anyway")
+			defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
 		}
 
 		if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
@@ -166,8 +171,7 @@ func serveAndCache(proxyWriter http.ResponseWriter, client *http.Client, clientR
 }
 
 func serveWithCache(proxyWriter http.ResponseWriter, originalHeaders http.Header, cachedResponseBuffer *bytes.Buffer) {
-	fmt.Println("Got the requested resource from cache")
-	fmt.Println("Serving content to browser...")
+	fmt.Println("Got the requested resource from cache, serving content...")
 
 	// Make a temporary copy of this cache resource.  We do not
 	// want to drain the actual buffer in the cache.
@@ -187,9 +191,6 @@ func serveWithCache(proxyWriter http.ResponseWriter, originalHeaders http.Header
 }
 
 func handler(proxyWriter http.ResponseWriter, clientRequest *http.Request) {
-	// var err error
-	// var serverResponse *http.Response
-	// var proxyRequest *http.Request
 	client := &http.Client{}
 
 	fmt.Println("Client requested", clientRequest.Method, clientRequest.RequestURI)
@@ -236,8 +237,6 @@ func ParseResponseBody(r io.Reader, h http.Header) (lists map[string]string, err
 	// depth := 0
 	z := html.NewTokenizer(r)
 
-	// expectScript := false
-	// expectLink := false
 	links := make(map[string]string)
 	for {
 		tt := z.Next()
