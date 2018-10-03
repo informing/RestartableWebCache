@@ -120,22 +120,37 @@ func serveAndCache(proxyWriter http.ResponseWriter, client *http.Client, clientR
 		fmt.Println(err)
 		return
 	} else {
+		// contentGzipped := false
 		for k, v := range serverResponse.Header {
 			// except for size
 			if k != "Content-Length" {
 				proxyWriter.Header().Set(k, v[0])
 			}
+			/*if k == "Content-Encoding" {
+				if v[0] == "gzip" {
+					proxyWriter.Header().Set(k, "identity")
+					contentGzipped = true
+				}
+			}*/
 		}
 		proxyWriter.WriteHeader(serverResponse.StatusCode)
 
 		var responseBuffer, parseBuffer bytes.Buffer
+		/*
+			if contentGzipped {
+				unzippedReader, err := gzip.NewReader(responseBodyData)
+				io.Copy(parseBuffer, unzippedReader)
+				unzippedReader.Close()
+			}*/
 		multiWriter := io.MultiWriter(&parseBuffer, &responseBuffer)
 		multiWriter.Write(responseBodyData)
 		defer serverResponse.Body.Close()
 
-		// responseBuffer.Write(responseBodyData)
-		fmt.Println("Calling cache.Save to cache the server response")
-		defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
+		// no-store would have no effect
+		if serverResponse.Header.Get("Cache-Control") == "public" || serverResponse.Header.Get("Cache-Control") == "" {
+			fmt.Println("Calling cache.Save to cache the server response")
+			defaultProxy.cache.SaveWithHeaders(*resourceURL, bytes.NewBuffer(responseBuffer.Bytes()), serverResponse.Header)
+		}
 
 		if strings.HasPrefix(serverResponse.Header.Get("Content-Type"), "text/html") {
 			fmt.Println("Parsing the response body to find more resources to cache")
@@ -145,7 +160,6 @@ func serveAndCache(proxyWriter http.ResponseWriter, client *http.Client, clientR
 			for k, v := range lists {
 				dumpedResponseData = bytes.Replace(dumpedResponseData, []byte(k), []byte(v), -1)
 			}
-			fmt.Println(string(dumpedResponseData))
 			proxyWriter.Write(dumpedResponseData)
 		}
 	}
