@@ -33,10 +33,13 @@ func dumpLink(link string) (dumpedLink string) {
 }
 
 func loadLink(link string) (loadedLink string) {
-	components := strings.Split(link, "?referrer='")
-	originalLink := strings.Replace(components[1], "-", "/", -1)
-	fmt.Println("loaded link", originalLink[0:len(originalLink)-1])
-	return originalLink[0 : len(originalLink)-1]
+	components := strings.Split(link, "%27")
+	if len(components) >= 2 {
+		return strings.Replace(components[1], "-", "/", -1)
+	} else {
+		fmt.Println(components)
+		return ""
+	}
 }
 
 func cacheResource(resourceLink string) (cached bool) {
